@@ -15,6 +15,14 @@ const bot = new Telegraf(token || 'DUMMY_TOKEN');
 // Wire up bot instance to admin alert service
 notifyAdminService.setBotInstance(bot);
 
+// Logging middleware for incoming updates
+bot.use((ctx, next) => {
+  const user = ctx.from ? `@${ctx.from.username || ctx.from.id} (${ctx.from.first_name || ''})` : 'Unknown';
+  const content = ctx.message?.text || ctx.callbackQuery?.data || `[${ctx.updateType}]`;
+  console.log(`📩 [Telegram Bot Update] ${user}: ${content}`);
+  return next();
+});
+
 // Global Telegraf error boundary
 bot.catch((err, ctx) => {
   console.error(`[Telegraf Error] for update ${ctx?.updateType}:`, err);
