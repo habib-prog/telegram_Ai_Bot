@@ -34,7 +34,8 @@ app.use('/api', apiRoutes);
 // Optional: Serve static build of admin panel in production if exists
 const adminBuildPath = path.join(__dirname, '../admin-panel/dist');
 app.use('/admin', express.static(adminBuildPath));
-app.get('/admin/*', (req, res) => {
+app.use('/assets', express.static(path.join(adminBuildPath, 'assets')));
+app.get(['/admin', '/admin/*'], (req, res) => {
   res.sendFile(path.join(adminBuildPath, 'index.html'), (err) => {
     if (err) {
       res.status(404).send('Admin dashboard not built yet. Run npm run build inside /admin-panel.');
