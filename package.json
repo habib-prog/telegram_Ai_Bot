@@ -1,0 +1,38 @@
+{
+  "name": "proxy-store-bot",
+  "version": "1.0.0",
+  "description": "Telegram Proxy Store Bot with Express Backend, SSLCommerz IPN, and React Admin Panel",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "bot": "node bot/index.js",
+    "dev:server": "nodemon server/index.js",
+    "dev:bot": "nodemon bot/index.js",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:bot\"",
+    "seed": "node scripts/seed.js"
+  },
+  "keywords": [
+    "telegram-bot",
+    "telegraf",
+    "sslcommerz",
+    "proxy-store",
+    "ecommerce"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.7.9",
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.9.5",
+    "morgan": "^1.10.0",
+    "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "nodemon": "^3.1.9"
+  }
+}
