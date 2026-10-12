@@ -57,6 +57,15 @@ const orderSchema = new mongoose.Schema(
       ref: "Plan",
       required: false,
     },
+    quantity: {
+      type: Number,
+      default: 1,
+      min: 1,
+    },
+    unitPrice: {
+      type: Number,
+      default: null,
+    },
     amount: {
       type: Number,
       required: true,
@@ -94,6 +103,11 @@ const orderSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Stock",
       default: null,
+    },
+    deliveredStockIds: {
+      type: [mongoose.Schema.Types.ObjectId],
+      ref: "Stock",
+      default: [],
     },
     deliveredCredentials: {
       type: String,

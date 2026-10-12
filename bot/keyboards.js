@@ -97,6 +97,40 @@ function variationsKeyboard(variations, productId, categoryId) {
 }
 
 /**
+ * Inline keyboard for quantity selection.
+ * Callback data: qty_<productId>_<variationId>_<qty> (variationId 0 = simple product)
+ *                buy_<productId>_<variationId>_<qty>
+ * @param {number|string} productId
+ * @param {number|string} variationId
+ * @param {number} quantity - Currently selected quantity
+ * @param {number} max - Highest quantity allowed
+ * @param {string} totalLabel - Pre-formatted total, e.g. "30 BDT"
+ */
+function quantityKeyboard(productId, variationId, quantity, max, totalLabel) {
+  const vid = variationId || 0;
+  const set = (q) => `qty_${productId}_${vid}_${Math.min(max, Math.max(1, q))}`;
+
+  const presets = [1, 5, 10, 25, 50].filter((q) => q <= max);
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback("➖", set(quantity - 1)),
+      Markup.button.callback(`  ${quantity}  `, set(quantity)),
+      Markup.button.callback("➕", set(quantity + 1)),
+    ],
+    presets.map((q) =>
+      Markup.button.callback(q === quantity ? `• ${q} •` : String(q), set(q)),
+    ),
+    [
+      Markup.button.callback(
+        `✅ Confirm · ${totalLabel}`,
+        `buy_${productId}_${vid}_${quantity}`,
+      ),
+    ],
+    [Markup.button.callback("⬅️ Back", "back_to_cats")],
+  ]);
+}
+
+/**
  * Inline keyboard for Order payment checkout
  * @param {string} checkoutUrl - WooCommerce checkout URL
  * @param {string} orderId
@@ -137,6 +171,7 @@ module.exports = {
   categoriesKeyboard,
   productsKeyboard,
   variationsKeyboard,
+  quantityKeyboard,
   orderPaymentKeyboard,
   userOrdersKeyboard,
 };

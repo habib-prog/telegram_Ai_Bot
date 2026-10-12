@@ -12,6 +12,40 @@ const strings = require("../../bot/config/strings");
 const { bot } = require("../../bot/index");
 
 /**
+ * Sends delivered credentials to the customer's Telegram chat.
+ * Large quantities are split into several messages to stay under Telegram's
+ * 4096-character limit.
+ */
+async function sendDelivery(chatId, productName, variationName, credentials, order) {
+  const quantity = credentials.length;
+  const chunks = [];
+  let current = [];
+  let length = 0;
+  for (const cred of credentials) {
+    if (length + cred.length > 2500 && current.length) {
+      chunks.push(current);
+      current = [];
+      length = 0;
+    }
+    current.push(cred);
+    length += cred.length + 1;
+  }
+  if (current.length) chunks.push(current);
+
+  for (let i = 0; i < chunks.length; i++) {
+    const text = strings.deliverySuccess(
+      productName,
+      variationName,
+      chunks[i].join("\n"),
+      order.orderId,
+      quantity,
+      chunks.length > 1 ? `${i + 1}/${chunks.length}` : "",
+    );
+    await bot.telegram.sendMessage(chatId, text, { parse_mode: "HTML" });
+  }
+}
+
+/**
  * WooCommerce Webhook Endpoint
  * Topic: order.updated, order.created
  * URL: /webhook/woocommerce
@@ -95,6 +129,7 @@ router.post("/webhook/woocommerce", async (req, res) => {
           variationName: lineItem.name || "",
           telegramId,
           telegramUsername,
+          quantity: parseInt(lineItem.quantity, 10) || 1,
           amount: parseFloat(wooOrder.total) || 0,
           currency: wooOrder.currency || "BDT",
           status: "paid",
@@ -123,17 +158,20 @@ router.post("/webhook/woocommerce", async (req, res) => {
     await order.save();
 
     // 3. Atomically check and assign proxy credentials from Stock collection
-    const claimedStock = await stockService.assignStockToOrder(order);
+    const claimedItems = await stockService.assignStockToOrder(order);
 
     const productName =
       order.productName || wooOrder.line_items?.[0]?.name || "Proxy";
     const variationName = order.variationName || "";
 
-    if (claimedStock) {
+    if (claimedItems.length) {
       // Stock available -> deliver immediately
       order.status = "delivered";
-      order.deliveredStockId = claimedStock._id;
-      order.deliveredCredentials = claimedStock.credentials;
+      order.deliveredStockId = claimedItems[0]._id;
+      order.deliveredStockIds = claimedItems.map((c) => c._id);
+      order.deliveredCredentials = claimedItems
+        .map((c) => c.credentials)
+        .join("\n");
       order.deliveredAt = new Date();
       await order.save();
 
@@ -149,15 +187,13 @@ router.post("/webhook/woocommerce", async (req, res) => {
 
         // Send credentials directly to user's Telegram chat
         try {
-          const deliveryMessage = strings.deliverySuccess(
+          await sendDelivery(
+            telegramId,
             productName,
             variationName,
-            claimedStock.credentials,
-            order.orderId,
+            claimedItems.map((c) => c.credentials),
+            order,
           );
-          await bot.telegram.sendMessage(telegramId, deliveryMessage, {
-            parse_mode: "HTML",
-          });
           console.log(
             `✅ [WooCommerce Delivery] Sent credentials to Telegram user ${telegramId} for order #${wooOrder.id}`,
           );
@@ -264,12 +300,15 @@ router.post("/webhook/payment-ipn", async (req, res) => {
     const brandName = brand?.name || order.productName || "Proxy Provider";
     const planLabel = plan?.label || order.variationName || "Proxy Plan";
 
-    const claimedStock = await stockService.assignStockToOrder(order);
+    const claimedItems = await stockService.assignStockToOrder(order);
 
-    if (claimedStock) {
+    if (claimedItems.length) {
       order.status = "delivered";
-      order.deliveredStockId = claimedStock._id;
-      order.deliveredCredentials = claimedStock.credentials;
+      order.deliveredStockId = claimedItems[0]._id;
+      order.deliveredStockIds = claimedItems.map((c) => c._id);
+      order.deliveredCredentials = claimedItems
+        .map((c) => c.credentials)
+        .join("\n");
       order.deliveredAt = new Date();
       await order.save();
 
@@ -282,15 +321,13 @@ router.post("/webhook/payment-ipn", async (req, res) => {
       );
 
       try {
-        const deliveryMessage = strings.deliverySuccess(
+        await sendDelivery(
+          order.telegramId,
           brandName,
           planLabel,
-          claimedStock.credentials,
-          order.orderId,
+          claimedItems.map((c) => c.credentials),
+          order,
         );
-        await bot.telegram.sendMessage(order.telegramId, deliveryMessage, {
-          parse_mode: "HTML",
-        });
       } catch (tgErr) {
         console.error(
           `❌ [Fulfillment] Failed to send Telegram message:`,

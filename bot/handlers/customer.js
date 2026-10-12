@@ -4,6 +4,8 @@ const strings = require("../config/strings");
 const keyboards = require("../keyboards");
 const woocommerce = require("../../services/woocommerce");
 
+const MAX_QUANTITY = 50;
+
 /**
  * Registers or updates user activity in database
  */
@@ -146,50 +148,8 @@ function registerCustomerHandlers(bot) {
       ]);
 
       if (!variations || variations.length === 0) {
-        // Simple product or no variations
-        const price = parseFloat(product.price) || 0;
-        const timestamp = Date.now().toString().slice(-6);
-        const orderId = `ORD-${timestamp}-${Math.floor(1000 + Math.random() * 9000)}`;
-
-        const wooResult = await woocommerce.createOrder({
-          telegramId: ctx.from.id,
-          telegramUsername: ctx.from.username || "",
-          firstName: ctx.from.first_name || "",
-          productId,
-          quantity: 1,
-          note: `Order from Telegram: @${ctx.from.username || ctx.from.id}`,
-        });
-
-        await Order.create({
-          orderId,
-          wooOrderId: String(wooResult.id),
-          wooProductId: parseInt(productId, 10),
-          productName: product.name,
-          telegramId: ctx.from.id,
-          telegramUsername: ctx.from.username || "",
-          telegramFirstName: ctx.from.first_name || "",
-          amount: price,
-          currency: "BDT",
-          gatewayRedirectUrl: wooResult.paymentUrl,
-          status: "pending",
-        });
-
-        const summaryText = strings.orderSummary(
-          product.name,
-          "Standard",
-          price,
-          "BDT",
-          orderId,
-        );
-        return ctx.editMessageText(summaryText, {
-          parse_mode: "HTML",
-          ...keyboards.orderPaymentKeyboard(
-            wooResult.paymentUrl,
-            orderId,
-            price,
-            "BDT",
-          ),
-        });
+        // Simple product or no variations -> ask for quantity
+        return showQuantity(ctx, productId, 0, 1, { product });
       }
 
       return ctx.editMessageText(strings.selectPlan(product.name), {
@@ -211,33 +171,117 @@ function registerCustomerHandlers(bot) {
     });
   });
 
-  // Step 5: User clicks a Variation / Package: var_<productId>_<variationId> -> Checkout
+  // Resolves product + selected package (variationId 0 = simple product)
+  async function resolveItem(productId, variationId, prefetched = {}) {
+    const product = prefetched.product || (await woocommerce.getProduct(productId));
+    if (!variationId) {
+      return {
+        product,
+        name: "Standard",
+        price: parseFloat(product.price) || 0,
+        inStock: product.stock_status === "instock",
+        stockQuantity: product.stock_quantity ?? null,
+      };
+    }
+    const variations = await woocommerce.getProductVariations(productId);
+    const selectedVar = variations.find(
+      (v) => String(v.id) === String(variationId),
+    );
+    if (!selectedVar) return null;
+    return {
+      product,
+      name: selectedVar.name,
+      price: parseFloat(selectedVar.price) || 0,
+      inStock: selectedVar.inStock,
+      stockQuantity: selectedVar.stockQuantity ?? null,
+    };
+  }
+
+  function maxQuantity(item) {
+    return item.stockQuantity > 0
+      ? Math.min(MAX_QUANTITY, item.stockQuantity)
+      : MAX_QUANTITY;
+  }
+
+  // Step 5: show the quantity selector for a package
+  async function showQuantity(ctx, productId, variationId, quantity, prefetched) {
+    const item = await resolveItem(productId, variationId, prefetched);
+    if (!item) {
+      return ctx.editMessageText("❌ The selected package could not be found.");
+    }
+    if (!item.inStock) {
+      return ctx.editMessageText(strings.outOfStockAlert);
+    }
+    const max = maxQuantity(item);
+    const qty = Math.min(max, Math.max(1, quantity));
+    return ctx.editMessageText(
+      strings.selectQuantity(item.product.name, item.name, item.price, qty, "BDT"),
+      {
+        parse_mode: "HTML",
+        ...keyboards.quantityKeyboard(
+          productId,
+          variationId,
+          qty,
+          max,
+          `${Math.round(item.price * qty * 100) / 100} BDT`,
+        ),
+      },
+    );
+  }
+
+  // User picks a Variation / Package: var_<productId>_<variationId>
   bot.action(/^var_(\d+)_(\d+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    try {
+      return await showQuantity(ctx, ctx.match[1], ctx.match[2], 1);
+    } catch (err) {
+      console.error("[Quantity Error]:", err.message);
+      return ctx.editMessageText("❌ Unable to load the package. Please try again.");
+    }
+  });
+
+  // Quantity stepper: qty_<productId>_<variationId>_<qty>
+  bot.action(/^qty_(\d+)_(\d+)_(\d+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    try {
+      return await showQuantity(
+        ctx,
+        ctx.match[1],
+        ctx.match[2],
+        parseInt(ctx.match[3], 10),
+      );
+    } catch (err) {
+      // Telegram rejects edits that change nothing (e.g. tapping the counter)
+      if (!/message is not modified/i.test(err.message)) {
+        console.error("[Quantity Error]:", err.message);
+      }
+    }
+  });
+
+  // Confirm: buy_<productId>_<variationId>_<qty> -> create order + payment link
+  bot.action(/^buy_(\d+)_(\d+)_(\d+)$/, async (ctx) => {
     await ctx.answerCbQuery("Generating payment link...");
     const productId = ctx.match[1];
-    const variationId = ctx.match[2];
+    const variationId = ctx.match[2] === "0" ? null : ctx.match[2];
 
     try {
-      const [product, variations] = await Promise.all([
-        woocommerce.getProduct(productId),
-        woocommerce.getProductVariations(productId),
-      ]);
-
-      const selectedVar = variations.find(
-        (v) => String(v.id) === String(variationId),
-      );
-      if (!selectedVar) {
+      const item = await resolveItem(productId, variationId);
+      if (!item) {
         return ctx.editMessageText("❌ The selected package could not be found.");
       }
-
-      if (!selectedVar.inStock) {
+      if (!item.inStock) {
         return ctx.editMessageText(strings.outOfStockAlert);
       }
 
+      const quantity = Math.min(
+        maxQuantity(item),
+        Math.max(1, parseInt(ctx.match[3], 10)),
+      );
+      const { product } = item;
       const timestamp = Date.now().toString().slice(-6);
       const randomSuffix = Math.floor(1000 + Math.random() * 9000);
       const orderId = `ORD-${timestamp}-${randomSuffix}`;
-      const price = parseFloat(selectedVar.price) || 0;
+      const total = Math.round(item.price * quantity * 100) / 100;
 
       // Create Order in WooCommerce
       const wooResult = await woocommerce.createOrder({
@@ -246,7 +290,7 @@ function registerCustomerHandlers(bot) {
         firstName: ctx.from.first_name || "",
         productId,
         variationId,
-        quantity: 1,
+        quantity,
         note: `Order from Telegram: @${ctx.from.username || ctx.from.id}`,
       });
 
@@ -255,36 +299,33 @@ function registerCustomerHandlers(bot) {
         orderId,
         wooOrderId: String(wooResult.id),
         wooProductId: parseInt(productId, 10),
-        wooVariationId: parseInt(variationId, 10),
+        wooVariationId: variationId ? parseInt(variationId, 10) : null,
         productName: product.name,
-        variationName: selectedVar.name,
+        variationName: item.name,
         proxyType: product.name.toUpperCase().includes("GB") ? "gb" : "ip",
         telegramId: ctx.from.id,
         telegramUsername: ctx.from.username || "",
         telegramFirstName: ctx.from.first_name || "",
-        amount: price,
+        quantity,
+        unitPrice: item.price,
+        amount: total,
         currency: "BDT",
         gatewayRedirectUrl: wooResult.paymentUrl,
         status: "pending",
       });
 
-      const summaryText = strings.orderSummary(
-        product.name,
-        selectedVar.name,
-        price,
-        "BDT",
-        orderId,
+      return ctx.editMessageText(
+        strings.orderSummary(product.name, item.name, total, "BDT", orderId, quantity),
+        {
+          parse_mode: "HTML",
+          ...keyboards.orderPaymentKeyboard(
+            wooResult.paymentUrl,
+            orderId,
+            total,
+            "BDT",
+          ),
+        },
       );
-
-      return ctx.editMessageText(summaryText, {
-        parse_mode: "HTML",
-        ...keyboards.orderPaymentKeyboard(
-          wooResult.paymentUrl,
-          orderId,
-          price,
-          "BDT",
-        ),
-      });
     } catch (err) {
       console.error("[OrderCreation Error]:", err.message);
       return ctx.editMessageText(

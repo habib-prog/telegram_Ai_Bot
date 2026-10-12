@@ -3,11 +3,12 @@ const Brand = require("../models/Brand");
 const Plan = require("../models/Plan");
 
 /**
- * Atomically claims an unused proxy stock item for an order.
- * Ensures zero race conditions or double-allocations.
+ * Atomically claims `order.quantity` unused proxy stock items for an order.
+ * All-or-nothing: if the pool cannot cover the full quantity, anything already
+ * claimed is released again and an empty array is returned.
  *
  * @param {Object} order - The Order document
- * @returns {Promise<Object|null>} - The claimed Stock document or null if stock empty
+ * @returns {Promise<Object[]>} - Claimed Stock documents ([] if stock is short)
  */
 async function assignStockToOrder(order) {
   const query = { isUsed: false };
@@ -21,23 +22,48 @@ async function assignStockToOrder(order) {
     query.planId = order.planId;
   }
 
-  const claimedStock = await Stock.findOneAndUpdate(
-    query,
-    {
-      $set: {
-        isUsed: true,
-        assignedToTelegramId: order.telegramId,
-        assignedAt: new Date(),
-        orderId: order._id,
-      },
-    },
-    {
-      new: true, // returns updated doc
-      sort: { createdAt: 1 }, // FIFO - allocate oldest stock first
-    },
-  );
+  const quantity = Math.max(1, order.quantity || 1);
+  const claimed = [];
 
-  return claimedStock;
+  for (let i = 0; i < quantity; i++) {
+    const item = await Stock.findOneAndUpdate(
+      query,
+      {
+        $set: {
+          isUsed: true,
+          assignedToTelegramId: order.telegramId,
+          assignedAt: new Date(),
+          orderId: order._id,
+        },
+      },
+      {
+        new: true, // returns updated doc
+        sort: { createdAt: 1 }, // FIFO - allocate oldest stock first
+      },
+    );
+    if (!item) break;
+    claimed.push(item);
+  }
+
+  if (claimed.length < quantity) {
+    // Not enough stock: release what we grabbed so another order can use it.
+    if (claimed.length) {
+      await Stock.updateMany(
+        { _id: { $in: claimed.map((c) => c._id) } },
+        {
+          $set: {
+            isUsed: false,
+            assignedToTelegramId: null,
+            assignedAt: null,
+            orderId: null,
+          },
+        },
+      );
+    }
+    return [];
+  }
+
+  return claimed;
 }
 
 /**
